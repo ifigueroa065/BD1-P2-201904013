@@ -356,18 +356,16 @@ DELIMITER ;
 
 --FUNCION6
 
-
 DELIMITER //
 
 CREATE PROCEDURE agregarHorario(
     IN p_CursoHabilitadoID BIGINT,
     IN p_DiaSemana NUMERIC,
-    IN p_HoraInicio TIME,
-    IN p_HoraFin TIME
+    IN p_Horario VARCHAR(255)
 )
 BEGIN
     DECLARE v_Error VARCHAR(255);
-    
+
     -- Verificar si el curso habilitado existe
     IF NOT EXISTS (SELECT 1 FROM CursoHabilitado WHERE CursoHabilitadoID = p_CursoHabilitadoID) THEN
         SET v_Error = 'El curso habilitado especificado no existe en la base de datos';
@@ -380,27 +378,42 @@ BEGIN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = v_Error;
     END IF;
 
+    -- Dividir la cadena de tiempo en hora de inicio y hora de fin
+    SET @horas = SUBSTRING_INDEX(p_Horario, '-', 1);
+    SET @hora_inicio = TRIM(SUBSTRING_INDEX(@horas, ':', 1));
+    SET @minuto_inicio = TRIM(SUBSTRING_INDEX(@horas, ':', -1));
+    
+    SET @horas = SUBSTRING_INDEX(p_Horario, '-', -1);
+    SET @hora_fin = TRIM(SUBSTRING_INDEX(@horas, ':', 1));
+    SET @minuto_fin = TRIM(SUBSTRING_INDEX(@horas, ':', -1));
+
+    -- Convertir los valores de hora en objetos de tiempo
+    SET @hora_inicio = MAKETIME(@hora_inicio, @minuto_inicio, 0);
+    SET @hora_fin = MAKETIME(@hora_fin, @minuto_fin, 0);
+
     -- Validar que la hora de inicio sea menor que la hora de fin
-    IF p_HoraInicio >= p_HoraFin THEN
+    IF @hora_inicio >= @hora_fin THEN
         SET v_Error = 'La hora de inicio debe ser menor que la hora de fin.';
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = v_Error;
     END IF;
 
     -- Insertar el horario del curso habilitado en la tabla HorarioCurso
     INSERT INTO HorarioCurso (CursoHabilitadoID, DiaSemana, HoraInicio, HoraFin)
-    VALUES (p_CursoHabilitadoID, p_DiaSemana, p_HoraInicio, p_HoraFin);
+    VALUES (p_CursoHabilitadoID, p_DiaSemana, @hora_inicio, @hora_fin);
 END;
 //
 
 DELIMITER ;
 
 
+
 --FUNCION7
+
 
 DELIMITER //
 
 CREATE PROCEDURE asignarCurso(
-    IN p_CursoCodigo BIGINT,
+    IN p_CodigoCurso BIGINT,
     IN p_Ciclo VARCHAR(2),
     IN p_Seccion CHAR(1),
     IN p_Carnet BIGINT
@@ -415,39 +428,54 @@ BEGIN
 
     -- Verificar si el carnet del estudiante existe
     IF NOT EXISTS (SELECT 1 FROM Estudiante WHERE Carnet = p_Carnet) THEN
-        SET v_Error = 'El carnet del estudiante no existe en la base de datos';
+        SET v_Error = 'El carnet del estudiante no existe en la base de datos.';
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = v_Error;
     END IF;
 
-    -- Validar que el curso habilitado existe
-    SET v_CursoHabilitadoID = (SELECT CursoHabilitadoID FROM CursoHabilitado WHERE CursoCodigo = p_CursoCodigo AND Ciclo = p_Ciclo AND Seccion = p_Seccion AND YEAR(NOW()) = YEAR(CursoHabilitado.FechaCreacion) LIMIT 1);
+    -- Obtener el CursoHabilitadoID correspondiente al código de curso, ciclo y sección
+    SELECT CursoHabilitadoID INTO v_CursoHabilitadoID
+    FROM CursoHabilitado
+    WHERE CursoCodigo = p_CodigoCurso AND Ciclo = p_Ciclo AND Seccion = p_Seccion;
 
+    -- Validar si el CursoHabilitadoID se encontró
     IF v_CursoHabilitadoID IS NULL THEN
-        SET v_Error = 'El curso habilitado especificado no existe en la base de datos para el año actual, ciclo y sección.';
+        SET v_Error = 'El curso habilitado especificado no existe en la base de datos para el ciclo y sección proporcionados.';
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = v_Error;
     END IF;
 
-    -- Validar que el estudiante no esté asignado al mismo curso y sección
+    -- Validar que el estudiante no esté ya asignado al mismo curso y sección
     IF EXISTS (SELECT 1 FROM AsignacionCurso WHERE Carnet = p_Carnet AND CursoHabilitadoID = v_CursoHabilitadoID) THEN
         SET v_Error = 'El estudiante ya está asignado al mismo curso y sección.';
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = v_Error;
     END IF;
 
+    -- Obtener los créditos necesarios para el curso
+    SELECT CreditosNecesarios INTO v_CreditosNecesarios
+    FROM Curso
+    WHERE Codigo = p_CodigoCurso;
+
+    -- Obtener los créditos actuales del estudiante
+    SELECT Creditos INTO v_CreditosActuales
+    FROM Estudiante
+    WHERE Carnet = p_Carnet;
+
     -- Validar que el estudiante tenga los créditos necesarios
-    SET v_CreditosNecesarios = (SELECT CreditosNecesarios FROM Curso WHERE Codigo = p_CursoCodigo LIMIT 1);
-
-    SET v_CreditosActuales = (SELECT Creditos FROM Estudiante WHERE Carnet = p_Carnet LIMIT 1);
-
     IF v_CreditosActuales < v_CreditosNecesarios THEN
         SET v_Error = 'El estudiante no tiene los créditos necesarios para inscribirse en este curso.';
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = v_Error;
     END IF;
 
+    -- Obtener el cupo máximo para el curso habilitado
+    SELECT CupoMaximo INTO v_CupoMaximo
+    FROM CursoHabilitado
+    WHERE CursoHabilitadoID = v_CursoHabilitadoID;
+
+    -- Obtener la cantidad de estudiantes asignados al curso habilitado
+    SELECT CantidadEstudiantesAsignados INTO v_CantidadEstudiantesAsignados
+    FROM CursoHabilitado
+    WHERE CursoHabilitadoID = v_CursoHabilitadoID;
+
     -- Validar que el cupo máximo no se haya alcanzado
-    SET v_CupoMaximo = (SELECT CupoMaximo FROM CursoHabilitado WHERE CursoHabilitadoID = v_CursoHabilitadoID LIMIT 1);
-
-    SET v_CantidadEstudiantesAsignados = (SELECT CantidadEstudiantesAsignados FROM CursoHabilitado WHERE CursoHabilitadoID = v_CursoHabilitadoID LIMIT 1);
-
     IF v_CantidadEstudiantesAsignados >= v_CupoMaximo THEN
         SET v_Error = 'El cupo máximo para este curso ya se ha alcanzado.';
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = v_Error;
@@ -461,18 +489,19 @@ BEGIN
     UPDATE CursoHabilitado
     SET CantidadEstudiantesAsignados = v_CantidadEstudiantesAsignados + 1
     WHERE CursoHabilitadoID = v_CursoHabilitadoID;
+    
 END;
 //
 
 DELIMITER ;
 
 
---FUNCION 8
 
+--FUNCION 8
 DELIMITER //
 
 CREATE PROCEDURE desasignarCurso(
-    IN p_CursoCodigo BIGINT,
+    IN p_CodigoCurso BIGINT,
     IN p_Ciclo VARCHAR(2),
     IN p_Seccion CHAR(1),
     IN p_Carnet BIGINT
@@ -484,35 +513,47 @@ BEGIN
 
     -- Verificar si el carnet del estudiante existe
     IF NOT EXISTS (SELECT 1 FROM Estudiante WHERE Carnet = p_Carnet) THEN
-        SET v_Error = 'El carnet del estudiante no existe en la base de datos';
+        SET v_Error = 'El carnet del estudiante no existe en la base de datos.';
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = v_Error;
     END IF;
 
-    -- Validar que el curso habilitado existe
-    SET v_CursoHabilitadoID = (SELECT CursoHabilitadoID FROM CursoHabilitado WHERE CursoCodigo = p_CursoCodigo AND Ciclo = p_Ciclo AND Seccion = p_Seccion AND YEAR(NOW()) = YEAR(CursoHabilitado.FechaCreacion) LIMIT 1);
+    -- Obtener el CursoHabilitadoID correspondiente al código de curso, ciclo y sección
+    SELECT CursoHabilitadoID INTO v_CursoHabilitadoID
+    FROM CursoHabilitado
+    WHERE CursoCodigo = p_CodigoCurso AND Ciclo = p_Ciclo AND Seccion = p_Seccion;
 
+    -- Validar si el CursoHabilitadoID se encontró
     IF v_CursoHabilitadoID IS NULL THEN
-        SET v_Error = 'El curso habilitado especificado no existe en la base de datos para el año actual, ciclo y sección.';
+        SET v_Error = 'El curso habilitado especificado no existe en la base de datos para el ciclo y sección proporcionados.';
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = v_Error;
     END IF;
 
-    -- Verificar si el estudiante está asignado al curso
+    -- Validar que el estudiante esté asignado al curso y sección
     IF NOT EXISTS (SELECT 1 FROM AsignacionCurso WHERE Carnet = p_Carnet AND CursoHabilitadoID = v_CursoHabilitadoID) THEN
-        SET v_Error = 'El estudiante no está asignado al curso y sección especificados.';
+        SET v_Error = 'El estudiante no está asignado a este curso y sección.';
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = v_Error;
     END IF;
 
-    -- Desasignar el curso del estudiante
-    DELETE FROM AsignacionCurso WHERE Carnet = p_Carnet AND CursoHabilitadoID = v_CursoHabilitadoID;
+    -- Obtener la cantidad de estudiantes asignados al curso habilitado
+    SELECT CantidadEstudiantesAsignados INTO v_CantidadEstudiantesAsignados
+    FROM CursoHabilitado
+    WHERE CursoHabilitadoID = v_CursoHabilitadoID;
+
+    -- Asegurarse de que el cupo no se reduzca si se produce la desasignación
+    IF v_CantidadEstudiantesAsignados <= 0 THEN
+        SET v_Error = 'No se puede desasignar más estudiantes, el cupo ya está vacío.';
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = v_Error;
+    END IF;
+
+    -- Desasignar el curso al estudiante
+    DELETE FROM AsignacionCurso
+    WHERE Carnet = p_Carnet AND CursoHabilitadoID = v_CursoHabilitadoID;
 
     -- Actualizar la cantidad de estudiantes asignados en CursoHabilitado
-    SET v_CantidadEstudiantesAsignados = (SELECT CantidadEstudiantesAsignados FROM CursoHabilitado WHERE CursoHabilitadoID = v_CursoHabilitadoID LIMIT 1);
-
-    IF v_CantidadEstudiantesAsignados > 0 THEN
-        UPDATE CursoHabilitado
-        SET CantidadEstudiantesAsignados = v_CantidadEstudiantesAsignados - 1
-        WHERE CursoHabilitadoID = v_CursoHabilitadoID;
-    END IF;
+    UPDATE CursoHabilitado
+    SET CantidadEstudiantesAsignados = v_CantidadEstudiantesAsignados - 1
+    WHERE CursoHabilitadoID = v_CursoHabilitadoID;
+    
 END;
 //
 
@@ -520,11 +561,10 @@ DELIMITER ;
 
 
 --FUNCION9
-
 DELIMITER //
 
 CREATE PROCEDURE ingresarNota(
-    IN p_CursoCodigo BIGINT,
+    IN p_CodigoCurso BIGINT,
     IN p_Ciclo VARCHAR(2),
     IN p_Seccion CHAR(1),
     IN p_Carnet BIGINT,
@@ -532,98 +572,111 @@ CREATE PROCEDURE ingresarNota(
 )
 BEGIN
     DECLARE v_Error VARCHAR(255);
-    DECLARE v_CreditosOtorga NUMERIC;
-    DECLARE v_CreditosEstudiante NUMERIC;
-    DECLARE v_Aprobado BOOLEAN;
     DECLARE v_CursoHabilitadoID BIGINT;
+    DECLARE v_CreditosEstudiante NUMERIC;
+    DECLARE v_CreditosCurso NUMERIC;
 
-    -- Validar que el carnet del estudiante existe
+    -- Verificar si el carnet del estudiante existe
     IF NOT EXISTS (SELECT 1 FROM Estudiante WHERE Carnet = p_Carnet) THEN
-        SET v_Error = 'El carnet del estudiante no existe en la base de datos';
+        SET v_Error = 'El carnet del estudiante no existe en la base de datos.';
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = v_Error;
     END IF;
 
-    -- Obtener el ID del CursoHabilitado para el curso, ciclo y sección especificados
-    SET v_CursoHabilitadoID = (SELECT CursoHabilitadoID FROM CursoHabilitado WHERE CursoCodigo = p_CursoCodigo AND Ciclo = p_Ciclo AND Seccion = p_Seccion AND YEAR(NOW()) = YEAR(CursoHabilitado.FechaCreacion) LIMIT 1);
+    -- Obtener el CursoHabilitadoID correspondiente al código de curso, ciclo y sección
+    SELECT CursoHabilitadoID INTO v_CursoHabilitadoID
+    FROM CursoHabilitado
+    WHERE CursoCodigo = p_CodigoCurso AND Ciclo = p_Ciclo AND Seccion = p_Seccion;
 
+    -- Validar si el CursoHabilitadoID se encontró
     IF v_CursoHabilitadoID IS NULL THEN
-        SET v_Error = 'El curso habilitado especificado no existe en la base de datos para el año actual, ciclo y sección.';
+        SET v_Error = 'El curso habilitado especificado no existe en la base de datos para el ciclo y sección proporcionados.';
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = v_Error;
     END IF;
 
-    -- Obtener la cantidad de créditos otorgados por el curso
-    SET v_CreditosOtorga = (SELECT CreditosOtorga FROM Curso WHERE Codigo = p_CursoCodigo LIMIT 1);
+    -- Obtener los créditos que otorga el curso
+    SELECT CreditosOtorga INTO v_CreditosCurso
+    FROM Curso
+    WHERE Codigo = p_CodigoCurso;
 
-    -- Obtener la cantidad de créditos del estudiante
-    SET v_CreditosEstudiante = (SELECT Creditos FROM Estudiante WHERE Carnet = p_Carnet LIMIT 1);
+    -- Obtener los créditos actuales del estudiante
+    SELECT Creditos INTO v_CreditosEstudiante
+    FROM Estudiante
+    WHERE Carnet = p_Carnet;
 
-    -- Calcular si el estudiante aprobó el curso y actualizar sus créditos
-    IF p_Nota >= 61 THEN
-        SET v_Aprobado = TRUE;
-        SET v_CreditosEstudiante = v_CreditosEstudiante + v_CreditosOtorga;
-    ELSE
-        SET v_Aprobado = FALSE;
+    -- Validar que la nota sea positiva
+    IF p_Nota < 0 THEN
+        SET v_Error = 'La nota no puede ser negativa.';
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = v_Error;
     END IF;
 
-    -- Insertar la nota en la tabla Notas
-    INSERT INTO Notas (CursoCodigo, Ciclo, Carnet, Nota, Anio)
-    VALUES (p_CursoCodigo, p_Ciclo, p_Carnet, ROUND(p_Nota), YEAR(NOW()));
+    -- Redondear la nota al entero más próximo
+    SET p_Nota = ROUND(p_Nota);
 
-    -- Actualizar el estado de aprobación en la tabla Estudiante
-    UPDATE Estudiante
-    SET Creditos = v_CreditosEstudiante,
-        Aprobado = v_Aprobado
-    WHERE Carnet = p_Carnet;
+    -- Actualizar la nota del estudiante en la tabla Notas
+    UPDATE Notas
+    SET Nota = p_Nota
+    WHERE CursoCodigo = p_CodigoCurso AND Ciclo = p_Ciclo AND Carnet = p_Carnet;
+
+    -- Verificar si el estudiante aprobó el curso
+    IF p_Nota >= 61 THEN
+        -- Sumar los créditos del estudiante con los créditos del curso
+        UPDATE Estudiante
+        SET Creditos = v_CreditosEstudiante + v_CreditosCurso
+        WHERE Carnet = p_Carnet;
+    END IF;
+    
 END;
 //
 
 DELIMITER ;
 
 
+
 --FUNCION 10
 DELIMITER //
 
 CREATE PROCEDURE generarActa(
-    IN p_CursoCodigo BIGINT,
+    IN p_CodigoCurso BIGINT,
     IN p_Ciclo VARCHAR(2),
     IN p_Seccion CHAR(1)
 )
 BEGIN
     DECLARE v_Error VARCHAR(255);
-    DECLARE v_NumEstudiantesAsignados BIGINT;
-    DECLARE v_NumEstudiantesNotasIngresadas BIGINT;
-    DECLARE v_ActaID BIGINT;
-
-    -- Validar que el curso exista
-    IF NOT EXISTS (SELECT 1 FROM Curso WHERE Codigo = p_CursoCodigo) THEN
-        SET v_Error = 'El curso especificado no existe en la base de datos';
+    DECLARE v_TotalEstudiantes NUMERIC;
+    DECLARE v_TotalNotasIngresadas NUMERIC;
+    DECLARE v_CursoHabilitadoID BIGINT;
+    
+    -- Verificar si el CursoHabilitado existe y obtener su ID
+    SELECT CursoHabilitadoID INTO v_CursoHabilitadoID
+    FROM CursoHabilitado
+    WHERE CursoCodigo = p_CodigoCurso AND Ciclo = p_Ciclo AND Seccion = p_Seccion;
+    
+    -- Validar si el CursoHabilitadoID se encontró
+    IF v_CursoHabilitadoID IS NULL THEN
+        SET v_Error = 'El curso habilitado especificado no existe en la base de datos para el ciclo y sección proporcionados.';
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = v_Error;
     END IF;
-
-    -- Obtener el ID del CursoHabilitado para el curso, ciclo y sección especificados
-    SET v_ActaID = (SELECT ActasID FROM Actas WHERE CursoHabilitadoID IN (SELECT CursoHabilitadoID FROM CursoHabilitado WHERE CursoCodigo = p_CursoCodigo AND Ciclo = p_Ciclo AND Seccion = p_Seccion AND YEAR(NOW()) = YEAR(CursoHabilitado.FechaCreacion)) LIMIT 1);
-
-    -- Verificar si se ha generado un acta para el curso, ciclo y sección especificados
-    IF v_ActaID IS NOT NULL THEN
-        SET v_Error = 'Ya se ha generado un acta para el curso, ciclo y sección especificados.';
+    
+    -- Contar la cantidad total de estudiantes asignados a este curso habilitado
+    SELECT COUNT(*) INTO v_TotalEstudiantes
+    FROM AsignacionCurso
+    WHERE CursoHabilitadoID = v_CursoHabilitadoID;
+    
+    -- Contar la cantidad total de notas ingresadas para este curso habilitado
+    SELECT COUNT(*) INTO v_TotalNotasIngresadas
+    FROM Notas
+    WHERE CursoCodigo = p_CodigoCurso AND Ciclo = p_Ciclo;
+    
+    -- Validar que todas las notas hayan sido ingresadas
+    IF v_TotalNotasIngresadas < v_TotalEstudiantes THEN
+        SET v_Error = 'No se han ingresado todas las notas para los estudiantes asignados a este curso.';
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = v_Error;
     END IF;
-
-    -- Contar la cantidad de estudiantes asignados al curso
-    SET v_NumEstudiantesAsignados = (SELECT COUNT(*) FROM AsignacionCurso WHERE CursoHabilitadoID IN (SELECT CursoHabilitadoID FROM CursoHabilitado WHERE CursoCodigo = p_CursoCodigo AND Ciclo = p_Ciclo AND Seccion = p_Seccion AND YEAR(NOW()) = YEAR(CursoHabilitado.FechaCreacion)));
-
-    -- Contar la cantidad de estudiantes a los que se les han ingresado notas
-    SET v_NumEstudiantesNotasIngresadas = (SELECT COUNT(*) FROM Notas WHERE CursoCodigo = p_CursoCodigo AND Ciclo = p_Ciclo);
-
-    -- Validar que se hayan ingresado notas para todos los estudiantes asignados al curso
-    IF v_NumEstudiantesNotasIngresadas < v_NumEstudiantesAsignados THEN
-        SET v_Error = 'No se han ingresado notas para todos los estudiantes asignados al curso.';
-        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = v_Error;
-    END IF;
-
-    -- Insertar el acta en la tabla Actas
+    
+    -- Generar el acta almacenando la fecha y hora actual
     INSERT INTO Actas (CursoHabilitadoID, FechaGeneracion)
-    SELECT CursoHabilitadoID, NOW() FROM CursoHabilitado WHERE CursoCodigo = p_CursoCodigo AND Ciclo = p_Ciclo AND Seccion = p_Seccion AND YEAR(NOW()) = YEAR(CursoHabilitado.FechaCreacion);
+    VALUES (v_CursoHabilitadoID, NOW());
+    
 END;
 //
 
@@ -810,136 +863,132 @@ DELIMITER ;
 DELIMITER //
 
 CREATE PROCEDURE consultarAprobacion(
-  IN p_CodigoCurso BIGINT,
-  IN p_Ciclo VARCHAR(2),
-  IN p_Anio BIGINT,
-  IN p_Seccion CHAR(1)
+    IN p_CursoCodigo BIGINT,
+    IN p_Ciclo VARCHAR(2),
+    IN p_Anio BIGINT,
+    IN p_Seccion CHAR(1)
 )
 BEGIN
-  -- Declarar una variable para el CursoHabilitadoID
-  DECLARE v_CursoHabilitadoID BIGINT;
-
-  -- Obtener el CursoHabilitadoID para el curso, ciclo, año y sección especificados
-  SELECT CursoHabilitado.CursoHabilitadoID
-  INTO v_CursoHabilitadoID
-  FROM CursoHabilitado
-  WHERE CursoHabilitado.CursoCodigo = p_CodigoCurso
-  AND CursoHabilitado.Ciclo = p_Ciclo
-  AND CursoHabilitado.Anio = p_Anio
-  AND CursoHabilitado.Seccion = p_Seccion;
-
-  -- Verificar si se encontró un CursoHabilitado
-  IF v_CursoHabilitadoID IS NULL THEN
-    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Curso y sección no encontrados para el ciclo y año especificados';
-  ELSE
-    -- Seleccionar y mostrar la lista de estudiantes y si aprobaron o reprobaron el curso
-    SELECT p_CodigoCurso AS 'Código de curso', AsignacionCurso.Carnet, CONCAT(Persona.Nombres, ' ', Persona.Apellidos) AS 'Nombre Completo',
-      CASE
-        WHEN Notas.Nota >= 61 THEN 'APROBADO'
-        ELSE 'DESAPROBADO'
-      END AS 'Estado'
-    FROM AsignacionCurso
-    INNER JOIN Estudiante ON AsignacionCurso.Carnet = Estudiante.Carnet
-    INNER JOIN Persona ON Estudiante.PersonaID = Persona.ID
-    LEFT JOIN Notas ON AsignacionCurso.CursoHabilitadoID = v_CursoHabilitadoID AND AsignacionCurso.Carnet = Notas.Carnet;
-  END IF;
-END //
+    -- Seleccionar el listado de aprobaciones
+    SELECT c.Codigo AS 'Código de Curso',
+           e.Carnet,
+           CONCAT(p.Nombres, ' ', p.Apellidos) AS 'Nombre completo',
+           CASE
+               WHEN n.Nota >= 61 THEN 'APROBADO'
+               ELSE 'DESAPROBADO'
+           END AS Estado
+    FROM Curso c
+    INNER JOIN Notas n ON c.Codigo = n.CursoCodigo
+    INNER JOIN Estudiante e ON n.Carnet = e.Carnet
+    INNER JOIN Persona p ON e.PersonaID = p.ID
+    INNER JOIN CursoHabilitado ch ON c.Codigo = ch.CursoCodigo
+    WHERE c.Codigo = p_CursoCodigo
+        AND ch.Ciclo = p_Ciclo
+        AND ch.Anio = p_Anio
+        AND ch.Seccion = p_Seccion;
+END;
+//
 
 DELIMITER ;
+
 
 
 --PROCE 6
-
 DELIMITER //
 
 CREATE PROCEDURE consultarActas(
-  IN p_CodigoCurso BIGINT
+    IN p_CursoCodigo BIGINT
 )
 BEGIN
-  -- Verificar si el curso existe
-  DECLARE cursoExiste INT;
-  SELECT COUNT(*) INTO cursoExiste FROM Curso WHERE Codigo = p_CodigoCurso;
-
-  IF cursoExiste = 0 THEN
-    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Curso no encontrado';
-  ELSE
-    -- Seleccionar y mostrar el listado de actas del curso ordenadas por fecha y hora de generación
-    SELECT 
-      p_CodigoCurso AS 'Código de curso',
-      a.Seccion,
-      CASE
-        WHEN a.Ciclo = '1S' THEN 'PRIMER SEMESTRE'
-        WHEN a.Ciclo = '2S' THEN 'SEGUNDO SEMESTRE'
-        WHEN a.Ciclo = 'VJ' THEN 'VACACIONES DE JUNIO'
-        WHEN a.Ciclo = 'VD' THEN 'VACACIONES DE DICIEMBRE'
-        ELSE 'Desconocido'
-      END AS 'Ciclo',
-      a.Anio AS 'Año',
-      a.CantidadEstudiantesAsignados AS 'Cantidad de estudiantes que llevaron el curso',
-      a.FechaGeneracion AS 'Fecha y hora de generado'
-    FROM CursoHabilitado a
-    WHERE a.CursoCodigo = p_CodigoCurso
+    -- Seleccionar el listado de actas y ordenarlas por fecha y hora
+    SELECT a.CursoHabilitadoID AS 'Código de Curso',
+           ch.Seccion,
+           CASE
+               WHEN ch.Ciclo = '1S' THEN 'PRIMER SEMESTRE'
+               WHEN ch.Ciclo = '2S' THEN 'SEGUNDO SEMESTRE'
+               WHEN ch.Ciclo = 'VJ' THEN 'VACACIONES DE JUNIO'
+               WHEN ch.Ciclo = 'VD' THEN 'VACACIONES DE DICIEMBRE'
+               ELSE ch.Ciclo
+           END AS 'Ciclo',
+           ch.Anio AS 'Año',
+           ch.CantidadEstudiantesAsignados AS 'Cantidad de Estudiantes',
+           a.FechaGeneracion AS 'Fecha y Hora de Generado'
+    FROM Actas a
+    INNER JOIN CursoHabilitado ch ON a.CursoHabilitadoID = ch.CursoHabilitadoID
+    WHERE ch.CursoCodigo = p_CursoCodigo
     ORDER BY a.FechaGeneracion;
-  END IF;
-END //
+END;
+//
 
 DELIMITER ;
 
+
 --PROCE7
+
 
 DELIMITER //
 
 CREATE PROCEDURE consultarDesasignacion(
-  IN p_CodigoCurso BIGINT,
-  IN p_Ciclo VARCHAR(2),
-  IN p_Anio BIGINT,
-  IN p_Seccion CHAR(1)
+    IN p_CursoCodigo BIGINT,
+    IN p_Ciclo VARCHAR(2),
+    IN p_Anio BIGINT,
+    IN p_Seccion CHAR(1)
 )
 BEGIN
-  -- Declarar variables para almacenar la cantidad de estudiantes que llevaron el curso y la cantidad de estudiantes que se desasignaron
-  DECLARE estudiantesLlevaronCurso INT;
-  DECLARE estudiantesDesasignados INT;
-  DECLARE porcentajeDesasignacion DECIMAL(5, 2);  -- Definir la variable de porcentaje de desasignación
-  
-  -- Inicializar la variable de porcentaje de desasignación
-  SET porcentajeDesasignacion = 0.0;
-  
-  -- Calcular la cantidad de estudiantes que llevaron el curso
-  SELECT COUNT(*) INTO estudiantesLlevaronCurso
-  FROM AsignacionCurso ac
-  JOIN CursoHabilitado ch ON ac.CursoHabilitadoID = ch.CursoHabilitadoID
-  WHERE ch.CursoCodigo = p_CodigoCurso AND ch.Ciclo = p_Ciclo AND ch.Anio = p_Anio AND ch.Seccion = p_Seccion;
-  
-  -- Calcular la cantidad de estudiantes que se desasignaron
-  SELECT COUNT(*) INTO estudiantesDesasignados
-  FROM CursoHabilitado ch
-  LEFT JOIN AsignacionCurso ac ON ch.CursoHabilitadoID = ac.CursoHabilitadoID
-  WHERE ch.CursoCodigo = p_CodigoCurso AND ch.Ciclo = p_Ciclo AND ch.Anio = p_Anio AND ch.Seccion = p_Seccion
-  AND ac.Carnet IS NULL;
-  
-  -- Calcular el porcentaje de desasignación
-  IF estudiantesLlevaronCurso > 0 THEN
-    SET porcentajeDesasignacion = (estudiantesDesasignados / estudiantesLlevaronCurso) * 100;
-  END IF;
-  
-  -- Seleccionar y mostrar los resultados
-  SELECT
-    p_CodigoCurso AS 'Código de curso',
-    p_Seccion AS 'Sección',
-    CASE
-      WHEN p_Ciclo = '1S' THEN 'PRIMER SEMESTRE'
-      WHEN p_Ciclo = '2S' THEN 'SEGUNDO SEMESTRE'
-      WHEN p_Ciclo = 'VJ' THEN 'VACACIONES DE JUNIO'
-      WHEN p_Ciclo = 'VD' THEN 'VACACIONES DE DICIEMBRE'
-      ELSE 'Desconocido'
-    END AS 'Ciclo',
-    p_Anio AS 'Año',
-    estudiantesLlevaronCurso AS 'Cantidad de estudiantes que llevaron el curso',
-    estudiantesDesasignados AS 'Cantidad de estudiantes que se desasignaron',
-    porcentajeDesasignacion AS 'Porcentaje de desasignación';
-END //
+    DECLARE v_NumEstudiantesCurso INT;
+    DECLARE v_NumEstudiantesDesasignados INT;
+    DECLARE v_PorcentajeDesasignacion DECIMAL(5, 2);
+    
+    -- Obtener el número de estudiantes que se inscribieron en el curso
+    SELECT COUNT(*) INTO v_NumEstudiantesCurso
+    FROM AsignacionCurso ac
+    INNER JOIN CursoHabilitado ch ON ac.CursoHabilitadoID = ch.CursoHabilitadoID
+    WHERE ch.CursoCodigo = p_CursoCodigo
+        AND ch.Ciclo = p_Ciclo
+        AND ch.Anio = p_Anio
+        AND ch.Seccion = p_Seccion;
+    
+    -- Obtener el número de estudiantes que se desasignaron del curso y pertenecen a la misma carrera
+    SELECT COUNT(*) INTO v_NumEstudiantesDesasignados
+    FROM AsignacionCurso ac
+    INNER JOIN CursoHabilitado ch ON ac.CursoHabilitadoID = ch.CursoHabilitadoID
+    INNER JOIN Estudiante e ON ac.Carnet = e.Carnet
+    WHERE ch.CursoCodigo = p_CursoCodigo
+        AND ch.Ciclo = p_Ciclo
+        AND ch.Anio = p_Anio
+        AND ch.Seccion = p_Seccion
+        AND e.CarreraID = (SELECT CarreraID FROM Curso WHERE Codigo = p_CursoCodigo);
+    
+    -- Calcular el porcentaje de desasignación
+    IF v_NumEstudiantesCurso = 0 THEN
+        SET v_PorcentajeDesasignacion = 0;
+    ELSE
+        SET v_PorcentajeDesasignacion = (v_NumEstudiantesDesasignados / v_NumEstudiantesCurso) * 100;
+    END IF;
+    
+    -- Retornar el resultado
+    SELECT p_CursoCodigo AS 'Código de Curso',
+           p_Seccion AS 'Sección',
+           CASE
+               WHEN p_Ciclo = '1S' THEN 'PRIMER SEMESTRE'
+               WHEN p_Ciclo = '2S' THEN 'SEGUNDO SEMESTRE'
+               WHEN p_Ciclo = 'VJ' THEN 'VACACIONES DE JUNIO'
+               WHEN p_Ciclo = 'VD' THEN 'VACACIONES DE DICIEMBRE'
+               ELSE p_Ciclo
+           END AS 'Ciclo',
+           p_Anio AS 'Año',
+           v_NumEstudiantesCurso AS 'Cantidad de Estudiantes',
+           v_NumEstudiantesDesasignados AS 'Cantidad de Estudiantes Desasignados',
+           v_PorcentajeDesasignacion AS 'Porcentaje de Desasignación';
+END;
+//
 
 DELIMITER ;
+
+
+
+
+
 
 
 
