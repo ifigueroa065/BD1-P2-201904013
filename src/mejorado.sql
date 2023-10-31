@@ -747,37 +747,34 @@ DELIMITER ;
 --PROCE2
 
 DELIMITER //
-
-CREATE PROCEDURE consultarEstudiante(
-  carnet_in BIGINT
-)
+CREATE PROCEDURE consultarEstudiante(IN carnetParam BIGINT)
 BEGIN
-  DECLARE carnet_existente INT;
+    DECLARE carnetValue BIGINT;
+    DECLARE nombreCompletoValue VARCHAR(255);
+    DECLARE fechaNacimientoValue DATE;
+    DECLARE correoValue VARCHAR(255);
+    DECLARE telefonoValue BIGINT;
+    DECLARE direccionValue VARCHAR(255);
+    DECLARE numeroDPIValue BIGINT;
+    DECLARE carreraNombre VARCHAR(255);
+    DECLARE creditosValue NUMERIC;
 
-  -- Verificar si el carnet del estudiante existe
-  SELECT COUNT(*) INTO carnet_existente FROM Estudiante WHERE Carnet = carnet_in;
-  
-  -- Validar si el carnet existe
-  IF carnet_existente = 0 THEN
-    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'El carnet del estudiante no existe';
-  ELSE
-    -- Consultar la información del estudiante
-    SELECT
-      Carnet,
-      CONCAT(Nombres, ' ', Apellidos) AS NombreCompleto,
-      FechaNacimiento,
-      Correo,
-      Telefono,
-      Direccion,
-      NumeroDPI,
-      (SELECT Nombre FROM Carrera WHERE ID = CarreraID) AS Carrera,
-      CreditosAprobados AS CreditosPosee
+    -- Verificar si el estudiante existe
+    SELECT Carnet, CONCAT(Nombres, ' ', Apellidos), FechaNacimiento, Correo, Telefono, Direccion, NumeroDPI, Carrera.Nombre, Creditos
+    INTO carnetValue, nombreCompletoValue, fechaNacimientoValue, correoValue, telefonoValue, direccionValue, numeroDPIValue, carreraNombre, creditosValue
     FROM Estudiante
-    WHERE Carnet = carnet_in;
-  END IF;
-END;
-//
+    LEFT JOIN Carrera ON Estudiante.CarreraID = Carrera.CarreraID
+    WHERE Carnet = carnetParam;
 
+    -- Comprobar si se encontró el estudiante
+    IF carnetValue IS NOT NULL THEN
+        -- Devolver los datos del estudiante
+        SELECT carnetValue AS Carnet, nombreCompletoValue AS NombreCompleto, fechaNacimientoValue AS FechaNacimiento, correoValue AS Correo, telefonoValue AS Telefono, direccionValue AS Direccion, numeroDPIValue AS NumeroDPI, carreraNombre AS Carrera, creditosValue AS Creditos;
+    ELSE
+        -- Mostrar un mensaje de error si el estudiante no existe
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Estudiante no encontrado';
+    END IF;
+END //
 DELIMITER ;
 
 
